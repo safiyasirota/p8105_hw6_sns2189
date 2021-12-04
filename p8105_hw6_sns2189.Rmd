@@ -12,6 +12,7 @@ library(tidyverse)
 library(modelr)
 library(mgcv)
 library(MASS)
+library(patchwork)
 
 knitr::opts_chunk$set(
   fig.width = 6,
@@ -159,7 +160,7 @@ I expected this result because I explicitly excluded potential variables from my
 
 __Importing data:__
 
-```{r}
+```{r, message = FALSE}
 weather_df <-
   rnoaa::meteo_pull_monitors(
     c("USW00094728"),
@@ -173,19 +174,70 @@ weather_df <-
   dplyr::select(name, id, everything())
 ```
 
-r^2
-log(β^0∗β^1)
+__Bootstrapping:__
 
-Use 5000 bootstrap samples and, for each bootstrap sample, produce estimates of these two quantities. Plot the distribution of your estimates, and describe these in words. Using the 5000 bootstrap estimates, identify the 2.5% and 97.5% quantiles to provide a 95% confidence interval for r^2 and log(β^0∗β^1). Note: broom::glance() is helpful for extracting r^2 from a fitted regression, and broom::tidy() (with some additional wrangling) should help in computing log(β^0∗β^1).
+First, I will write a function to calculate the log of the product of $\widehat{\beta}_0$ and $\widehat{\beta}_1$ from a `broom::tidy(fit)` results and a function to get the $\widehat{r}^2$ value from a `broom::glance(fit)` result that will come in handy later.
 
 ```{r}
-weather_df %>% 
-  bootstrap(n = 5000, id = "strap_number") %>% 
-  mutate(
-    models = map(.x = strap, ~lm(tmax ~ tmin, data = .x)),
-    results = map(models, broom::tidy)
-  ) %>% 
-  dplyr::select(strap_number, results) %>% 
-  unnest(results)
+log_coefs <- function(result) {
+  
+  log(pull(filter(result, term == "(Intercept)"), estimate) * pull(filter(result, term == "tmin"), estimate))
+  
+}
+
+r2 <- function(result) {
+  
+  pull(result, r.squared)
+  
+}
 ```
+
+Now we can bootstrap to find the distributions of our quantities of interest. 
+
+```{r}
+set.seed(1)
+
+weather_bootstrap <-
+  weather_df %>% 
+    bootstrap(n = 5000, id = "strap_number") %>% 
+    mutate(
+      models = map(.x = strap, ~lm(tmax ~ tmin, data = .x)),
+      coef_results = map(models, broom::tidy),
+      rsquare_results = map(models, broom::glance)
+    ) %>% 
+    dplyr::select(strap_number, coef_results, rsquare_results) %>% 
+    mutate(
+      log_b0_b1 = map(coef_results, log_coefs),
+      r_sq = map(rsquare_results, r2)
+    ) %>% 
+    dplyr::select(strap_number, log_b0_b1, r_sq) %>% 
+    unnest(log_b0_b1:r_sq)
+```
+
+__Plotting the distributions:__
+
+```{r}
+b0_b1_ggp <-
+weather_bootstrap %>% 
+  ggplot(aes(x = log_b0_b1)) +
+  geom_density()
+
+r2_ggp <-
+weather_bootstrap %>% 
+  ggplot(aes(x = r_sq)) +
+  geom_density()
+
+b0_b1_ggp + r2_ggp
+```
+
+The distribution for $log(\widehat{\beta}_0 * \widehat{\beta}_1)$ seems normal around a mean of about 2.01. The distribution of $\widehat{r}^2$ also seems about normal, but with a slight left skew, around a mean of about 0.915.
+
+__Finding confidence intervals:__
+
+```{r}
+quantile(pull(weather_bootstrap, log_b0_b1), probs = c(.025, .975))
+quantile(pull(weather_bootstrap, r_sq), probs = c(.025, .975))
+```
+
+From bootstrapping, our estimate for $\widehat{r}^2$ is `r round(mean(pull(weather_bootstrap, r_sq)), 3)` (95% CI [0.894, 0.927]). Our estimate for $log(\widehat{\beta}_0 * \widehat{\beta}_1)$ is `r round(mean(pull(weather_bootstrap, log_b0_b1)), 3)` (95% CI [1.965, 2.059]).
 
