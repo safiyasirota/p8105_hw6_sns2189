@@ -11,6 +11,7 @@ output:
 library(tidyverse)
 library(modelr)
 library(mgcv)
+library(MASS)
 
 knitr::opts_chunk$set(
   fig.width = 6,
@@ -46,41 +47,113 @@ map(birthwt_df, ~sum(is.na(.)))
 map(birthwt_df, ~sum(is.character(.)))
 ```
 
+In this step, we change some numeric variables to factor variables and check for missing values, although we find none. 
+
 __Fitting a linear model__
 
-```{r}
-map(birthwt_df, ~cor.test(as.numeric(.), birthwt_df$bwt))
-```
+Let's assume we would like to make predictions of birth weight using our model in order to help clinician's identify at-risk pregnancies. In this case, we would not want to include predictors whose values can only be measured on the day of birth or _after_ birth.
 
-sex, head, delwt, fincome, frace, gaweeks, mheight, momage, mrace, ppbmi, smoken, and wtgain significantly correlated
+I also will exclude the two race predictors. I think they are inappropriate since there is no biological difference in babies of different races. The researchers are probably using these variables as a proxy for measures like socioeconomic status and nutrition, which do vary by race due to societal discrimination. Since we do not have information on these variables directly, it seems incorrect to attach these all to the race variables and to make interpretations or predictions based on race alone.
+
+To find our linear model, we will use a stepwise process to find the model with the lowest AIC. But the full model we start with will exlude some variables as described above.
 
 ```{r}
-fit <- lm(bwt ~ babysex + bhead + delwt + frace + gaweeks + mheight + momage + mrace + ppbmi + smoken + wtgain, data = birthwt_df)
+full_model <- lm(bwt ~ babysex + fincome + gaweeks + malform + menarche + momage + parity + pnumlbw + pnumsga + ppbmi + ppwt + smoken + wtgain, data = birthwt_df)
+
+fit <- stepAIC(full_model, direction = "both", trace = FALSE)
+
 broom::tidy(fit)
 ```
 
-We can get rid of the insignificant variables
+This method left in the parity variable, which is insignificant, so I will remove it manually to get the final linear model.
 
 ```{r}
-fit2 <- lm(bwt ~ babysex + bhead + gaweeks + mrace + smoken, data = birthwt_df)
-broom::tidy(fit2)
+linear_fit <- lm(bwt ~ babysex + fincome + gaweeks + menarche + momage + ppbmi + ppwt + smoken + wtgain, data = birthwt_df)
 ```
 
-Graph residuals
+Let's check some diagnostic plots to make sure we see linearity and normality of the residuals.
 
 ```{r}
-modelr::add_residuals(birthwt_df, fit2) %>% 
+modelr::add_residuals(birthwt_df, linear_fit) %>% 
   ggplot(aes(x = bwt, y = resid)) +
-  geom_point()
-#not totally linear
+  geom_point() +
+  geom_smooth(aes(y = resid))
 
-modelr::add_residuals(birthwt_df, fit2) %>% 
+modelr::add_residuals(birthwt_df, linear_fit) %>% 
   ggplot(aes(x = resid)) +
-  geom_density()
-
-#add predictions
+  geom_density() 
 ```
 
+The pattern we see here looks linear and the residuals look normal, which is what we want. We could test a non-linear regression model, but since our linear model looks like it satisfies the residual assumptions and is easier to interpret, I will stick with it.
+
+__Residual vs fitted values plot:__
+
+```{r}
+birthwt_df %>% 
+  modelr::add_residuals(linear_fit) %>% 
+  modelr::add_predictions(linear_fit) %>% 
+  ggplot(aes(x = pred, y = resid)) +
+  geom_point() +
+  geom_abline(aes(slope = 0, intercept = 0), color = "red")
+```
+
+Again, this plot seems to support linearity as the residuals seem about equally distributed above and below the y = 0 line. Even though there are fewer data points on the left side of the x-axis, variance seems about even throughout.
+
+__Comparing model to two others:__
+
+Now we will see how our model holds up against the following two alternatives.
+
+```{r}
+comp_1 <- lm(bwt ~ blength + gaweeks, data = birthwt_df)
+comp_2 <- lm(bwt ~ bhead + blength + babysex + bhead*blength*babysex, data = birthwt_df)
+```
+
+Now, let's split our data into training and testing sections.
+
+```{r}
+cv_df <-
+  crossv_mc(birthwt_df, 100) %>% 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)
+  )
+```
+
+Lastly, let's fit the models and extract the RMSE's.
+
+```{r}
+cv_df <-
+  cv_df %>% 
+    mutate(
+      linear_fit = map(.x = train, ~lm(bwt ~ babysex + fincome + gaweeks + menarche + momage + ppbmi + ppwt + smoken + wtgain, data = .x)),
+      comp_1 = map(.x = train, ~lm(bwt ~ blength + gaweeks, data = .x)),
+      comp_2 = map(.x = train, ~lm(bwt ~ bhead + blength + babysex + bhead*blength*babysex, data = .x))
+      ) %>% 
+    mutate(
+      rmse_linear = map2_dbl(.x = linear_fit, .y = test, ~rmse(model = .x, data = .y)),
+      rmse_comp1 = map2_dbl(.x = comp_1, .y = test, ~rmse(model = .x, data = .y)),
+      rmse_comp2 = map2_dbl(.x = comp_2, .y = test, ~rmse(model = .x, data = .y))
+    )
+```
+
+Now, we can look at the model distributions in terms of RMSE.
+
+```{r}
+cv_df %>% 
+  dplyr::select(.id, starts_with("rmse")) %>% 
+  pivot_longer(
+    rmse_linear:rmse_comp2,
+    names_to = "model",
+    values_to = "rmse",
+    names_prefix = "rmse_"
+  ) %>% 
+  ggplot(aes(x = model, y = rmse)) +
+  geom_boxplot()
+```
+
+My model has a much worse fit than the comparison models. The second model, which includes head circumference, length, sex, and all their interactions, has a very low RMSE relative to the other two models. 
+
+I expected this result because I explicitly excluded potential variables from my model that I knew could not be accessed before the baby was born. Although the two comparison models have better fit, my model could be used to address the problem I mentioned: identifying at-risk mothers for low birth weight babies before the babies are delivered.
 
 ## Problem 2
 
@@ -97,7 +170,7 @@ weather_df <-
     name = recode(id, USW00094728 = "CentralPark_NY"),
     tmin = tmin / 10,
     tmax = tmax / 10) %>%
-  select(name, id, everything())
+  dplyr::select(name, id, everything())
 ```
 
 r^2
@@ -112,7 +185,7 @@ weather_df %>%
     models = map(.x = strap, ~lm(tmax ~ tmin, data = .x)),
     results = map(models, broom::tidy)
   ) %>% 
-  select(strap_number, results) %>% 
+  dplyr::select(strap_number, results) %>% 
   unnest(results)
 ```
 
