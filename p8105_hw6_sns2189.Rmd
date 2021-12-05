@@ -3,8 +3,9 @@ title: "Homework 6"
 author: "Safiya Sirota"
 date:  2021-12-04
 output: 
-  github_document:
-    toc: TRUE
+    github_document:
+      pandoc_args: --webtex
+      toc: TRUE
 ---
 
 ```{r, echo = FALSE, message = FALSE}
@@ -176,7 +177,7 @@ weather_df <-
 
 __Bootstrapping:__
 
-First, I will write a function to calculate the log of the product of $\widehat{\beta}_0$ and $\widehat{\beta}_1$ from a `broom::tidy(fit)` results and a function to get the $\widehat{r}^2$ value from a `broom::glance(fit)` result that will come in handy later.
+First, I will write a function to calculate the log of the product of $\widehat{\beta}_0$ and $\widehat{\beta}_1$ from a `broom::tidy(fit)` result and a function to get the $\widehat{r}^2$ value from a `broom::glance(fit)` result that will come in handy later.
 
 ```{r}
 log_coefs <- function(result) {
@@ -239,5 +240,9 @@ quantile(pull(weather_bootstrap, log_b0_b1), probs = c(.025, .975))
 quantile(pull(weather_bootstrap, r_sq), probs = c(.025, .975))
 ```
 
-From bootstrapping, our estimate for $\widehat{r}^2$ is `r round(mean(pull(weather_bootstrap, r_sq)), 3)` (95% CI [0.894, 0.927]). Our estimate for $log(\widehat{\beta}_0 * \widehat{\beta}_1)$ is `r round(mean(pull(weather_bootstrap, log_b0_b1)), 3)` (95% CI [1.965, 2.059]).
+From bootstrapping, 
+
+* our estimate for $\widehat{r}^2$ is `r round(mean(pull(weather_bootstrap, r_sq)), 3)` (95% CI [0.894, 0.927]),
+
+* our estimate for $log(\widehat{\beta}_0 * \widehat{\beta}_1)$ is `r round(mean(pull(weather_bootstrap, log_b0_b1)), 3)` (95% CI [1.965, 2.059]).
 
